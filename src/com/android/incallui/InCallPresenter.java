@@ -683,7 +683,9 @@ public class InCallPresenter implements CallList.Listener {
 
         // check if the user want to have the call UI in background and set it up
         mCallUiInBackground = Settings.System.getInt(mContext.getContentResolver(),
-                Settings.System.CALL_UI_IN_BACKGROUND, 0) == 1;
+                Settings.System.CALL_UI_IN_BACKGROUND, 1) == 1;
+
+        boolean isHeadsUp = false;
 
         if (mCallUiInBackground) {
             // get power service to check later if screen is on
@@ -697,6 +699,10 @@ public class InCallPresenter implements CallList.Listener {
             } catch (RemoteException e) {
             }
             mCallUiInBackground = pm.isScreenOn() && !isKeyguardShowing;
+
+            // Check if user want to see notification as heads up.
+            isHeadsUp = Settings.System.getInt(mContext.getContentResolver(),
+                    Settings.System.CALL_UI_AS_HEADS_UP, 1) == 1;
         }
 
         boolean nonIntrusiveDisabled = Settings.System.getInt(mContext.getContentResolver(),
@@ -709,7 +715,8 @@ public class InCallPresenter implements CallList.Listener {
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             mContext.startActivity(intent);
         } else {
-            mStatusBarNotifier.updateNotificationAndLaunchIncomingCallUi(inCallState, mCallList, mCallUiInBackground);
+            mStatusBarNotifier.updateNotificationAndLaunchIncomingCallUi(
+                    inCallState, mCallList, mCallUiInBackground, isHeadsUp);
         }
     }
 
@@ -722,7 +729,7 @@ public class InCallPresenter implements CallList.Listener {
         // First cancel the actual notification and then update
         mStatusBarNotifier.cancelInCall();
         mStatusBarNotifier.updateNotificationAndLaunchIncomingCallUi(
-                InCallState.INCALL, mCallList, false);
+                InCallState.INCALL, mCallList, false, false);
     }
 
     /**
@@ -730,7 +737,7 @@ public class InCallPresenter implements CallList.Listener {
      */
     public void startIncomingCallUi(InCallState inCallState) {
         mStatusBarNotifier.updateNotificationAndLaunchIncomingCallUi(
-                inCallState, mCallList, mCallUiInBackground);
+                inCallState, mCallList, mCallUiInBackground, false);
     }
 
     /**
