@@ -188,24 +188,13 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
         }
 
         // Set the call state
-        if (mPrimary != null) {
-            final boolean bluetoothOn =
-                    (AudioModeProvider.getInstance().getAudioMode() == AudioMode.BLUETOOTH);
-            ui.setCallState(mPrimary.getState(), mPrimary.getDisconnectCause(), bluetoothOn,
-                    getGatewayLabel(), getGatewayNumber(), mPrimary.isHeldRemotely());
-        } else {
-            ui.setCallState(Call.State.IDLE, Call.DisconnectCause.UNKNOWN,
-                    false, null, null, false);
-        }
+        updateCallState(mPrimary, AudioModeProvider.getInstance().getAudioMode());
     }
 
     @Override
     public void onAudioMode(int mode) {
         if (mPrimary != null && getUi() != null) {
-            final boolean bluetoothOn = (AudioMode.BLUETOOTH == mode);
-
-            getUi().setCallState(mPrimary.getState(), mPrimary.getDisconnectCause(), bluetoothOn,
-                    getGatewayLabel(), getGatewayNumber(), mPrimary.isHeldRemotely());
+            updateCallState(mPrimary, mode);
         }
     }
 
@@ -215,6 +204,22 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
 
     @Override
     public void onMute(boolean muted) {
+    }
+
+    private void updateCallState(Call call, int audioMode) {
+        if (call == null) {
+            getUi().setCallState(Call.State.IDLE, Call.DisconnectCause.UNKNOWN,
+                    false, null, null, false);
+            return;
+        }
+
+        final boolean bluetoothOn = audioMode == AudioMode.BLUETOOTH;
+        final int state = call.getState();
+        final boolean isWaitingForRemoteSide =
+                (state == Call.State.ACTIVE && call.isHeldRemotely()) ||
+                (state == Call.State.DIALING && call.isDialingWaiting());
+        getUi().setCallState(call.getState(), call.getDisconnectCause(), bluetoothOn,
+                getGatewayLabel(), getGatewayNumber(), isWaitingForRemoteSide);
     }
 
     public void updateCallTime() {
@@ -475,7 +480,7 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
                 Drawable photo, boolean isConference, boolean isGeneric);
         void setSecondaryImage(Drawable image);
         void setCallState(int state, Call.DisconnectCause cause, boolean bluetoothOn,
-                String gatewayLabel, String gatewayNumber, boolean isHeldRemotely);
+                String gatewayLabel, String gatewayNumber, boolean isWaitingForRemoteSide);
         void setPrimaryCallElapsedTime(boolean show, String duration);
         void setPrimaryName(String name, boolean nameIsNumber);
         void setPrimaryImage(Drawable image);
