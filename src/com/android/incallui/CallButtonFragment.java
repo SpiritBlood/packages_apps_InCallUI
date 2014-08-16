@@ -53,6 +53,9 @@ public class CallButtonFragment
     private ImageButton mBlacklistButton;
     private CallRecordingButton mRecordButton;
 
+    private View mBlacklistSpacer;
+    private View mRecordSpacer;
+
     private PopupMenu mAudioModePopup;
     private boolean mAudioModePopupVisible;
     private View mEndCallButton;
@@ -150,15 +153,18 @@ public class CallButtonFragment
 
         // "Add to black list" button
         mBlacklistButton = (ImageButton) parent.findViewById(R.id.addBlacklistButton);
+        mBlacklistSpacer = parent.findViewById(R.id.blacklistSpacer);
         if (BlacklistUtils.isBlacklistEnabled(getActivity())) {
             mBlacklistButton.setVisibility(View.VISIBLE);
             mBlacklistButton.setOnClickListener(this);
+            mBlacklistSpacer.setVisibility(View.VISIBLE);
         } else {
             mBlacklistButton.setVisibility(View.GONE);
+            mBlacklistSpacer.setVisibility(View.GONE);
         }
 
         mRecordButton = (CallRecordingButton) parent.findViewById(R.id.recordButton);
-        mRecordButton.setOnClickListener(mRecordButton);
+        mRecordSpacer = parent.findViewById(R.id.recordSpacer);
 
         return parent;
     }
@@ -267,6 +273,7 @@ public class CallButtonFragment
     @Override
     public void showRecording(boolean show) {
         mRecordButton.setVisibility(show ? View.VISIBLE : View.GONE);
+        mRecordSpacer.setVisibility(show ? View.VISIBLE : View.GONE);
     }
 
     @Override
