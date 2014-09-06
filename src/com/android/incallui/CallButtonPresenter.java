@@ -1,4 +1,8 @@
 /*
+ * Copyright (c) 2013, The Linux Foundation. All rights reserved.
+ * Not a Contribution, Apache license notifications and license are retained
+ * for attribution purposes only.
+ *
  * Copyright (C) 2013 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -33,11 +37,14 @@ import android.telephony.PhoneNumberUtils;
  * Logic for call buttons.
  */
 public class CallButtonPresenter extends Presenter<CallButtonPresenter.CallButtonUi>
-        implements InCallStateListener, AudioModeListener, IncomingCallListener {
+        implements InCallStateListener, AudioModeListener, IncomingCallListener,
+        CallList.ActiveSubChangeListener {
 
     private Call mCall;
     private boolean mAutomaticallyMuted = false;
     private boolean mPreviousMuteState = false;
+
+    private int mPreviousSub = 0;
 
     private boolean mShowGenericMerge = false;
     private boolean mShowManageConference = false;
@@ -58,6 +65,7 @@ public class CallButtonPresenter extends Presenter<CallButtonPresenter.CallButto
         // register for call state changes last
         InCallPresenter.getInstance().addListener(this);
         InCallPresenter.getInstance().addIncomingCallListener(this);
+        CallList.getInstance().addActiveSubChangeListener(this);
     }
 
     @Override
@@ -67,6 +75,7 @@ public class CallButtonPresenter extends Presenter<CallButtonPresenter.CallButto
         InCallPresenter.getInstance().removeListener(this);
         AudioModeProvider.getInstance().removeListener(this);
         InCallPresenter.getInstance().removeIncomingCallListener(this);
+        CallList.getInstance().removeActiveSubChangeListener(this);
     }
 
     @Override
@@ -198,13 +207,17 @@ public class CallButtonPresenter extends Presenter<CallButtonPresenter.CallButto
         CallCommandClient.getInstance().merge();
     }
 
+    public void addParticipantClicked() {
+        InCallPresenter.getInstance().sendAddParticipantIntent();
+    }
+
     public void addCallClicked() {
         // Automatically mute the current call
         mAutomaticallyMuted = true;
         mPreviousMuteState = AudioModeProvider.getInstance().getMute();
+        mPreviousSub = mCall.getSubscription();
         // Simulate a click on the mute button
-        muteClicked(true);
-
+        CallCommandClient.getInstance().muteInternal(true);
         CallCommandClient.getInstance().addCall();
     }
 
@@ -244,6 +257,13 @@ public class CallButtonPresenter extends Presenter<CallButtonPresenter.CallButto
         mShowButtonsIfIdle = showIfIdle;
     }
 
+    public void modifyCallButtonClicked() {
+        Call call = CallList.getInstance().getActiveCall();
+        if (call != null) {
+            getUi().displayModifyCallOptions(call.getCallId());
+        }
+    }
+
     private void updateUi(InCallState state, Call call) {
         final CallButtonUi ui = getUi();
         if (ui == null) {
@@ -277,10 +297,12 @@ public class CallButtonPresenter extends Presenter<CallButtonPresenter.CallButto
             Log.v(this, "Show swap ", call.can(Capabilities.SWAP_CALLS));
             Log.v(this, "Show add call ", call.can(Capabilities.ADD_CALL));
             Log.v(this, "Show mute ", call.can(Capabilities.MUTE));
+            Log.v(this, "Show modify call ", call.can(Capabilities.MODIFY_CALL));
 
             final boolean canMerge = call.can(Capabilities.MERGE_CALLS);
             final boolean canAdd = call.can(Capabilities.ADD_CALL);
             final boolean isGenericConference = call.can(Capabilities.GENERIC_CONFERENCE);
+            final boolean canModifyCall = call.can(Capabilities.MODIFY_CALL);
 
 
             final boolean showMerge = !isGenericConference && canMerge;
@@ -328,7 +350,12 @@ public class CallButtonPresenter extends Presenter<CallButtonPresenter.CallButto
                 }
             }
 
+            ui.enableAddParticipant(call.can(Capabilities.ADD_PARTICIPANT));
+
             ui.enableMute(call.can(Capabilities.MUTE));
+
+            ui.enableModifyCall(canModifyCall);
+            ui.showModifyCall(canModifyCall);
 
             // Finally, update the "extra button row": It's displayed above the
             // "End" button, but only if necessary.  Also, it's never displayed
@@ -345,8 +372,11 @@ public class CallButtonPresenter extends Presenter<CallButtonPresenter.CallButto
             updateExtraButtonRow();
 
             boolean canRecord = CallRecorder.getInstance().isEnabled() &&
-                    CallList.getInstance().getActiveCall() != null;
+                CallList.getInstance().getActiveCall() != null;
             ui.showRecording(canRecord);
+        } else {
+            ui.enableAddParticipant(false);
+            ui.showModifyCall(false);
         }
     }
 
@@ -370,12 +400,16 @@ public class CallButtonPresenter extends Presenter<CallButtonPresenter.CallButto
 
     public void refreshMuteState() {
         // Restore the previous mute state
+        if (mAutomaticallyMuted) {
+            CallCommandClient.getInstance().updateMuteState(
+                    mPreviousSub, mPreviousMuteState);
+        }
         if (mAutomaticallyMuted &&
                 AudioModeProvider.getInstance().getMute() != mPreviousMuteState) {
             if (getUi() == null) {
                 return;
             }
-            muteClicked(mPreviousMuteState);
+            CallCommandClient.getInstance().muteInternal(mPreviousMuteState);
         }
         mAutomaticallyMuted = false;
     }
@@ -392,6 +426,7 @@ public class CallButtonPresenter extends Presenter<CallButtonPresenter.CallButto
         void showRecording(boolean show);
         void showAddCall(boolean show);
         void enableAddCall(boolean enabled);
+        void enableAddParticipant(boolean show);
         void displayDialpad(boolean on);
         boolean isDialpadVisible();
         void setAudio(int mode);
@@ -400,5 +435,16 @@ public class CallButtonPresenter extends Presenter<CallButtonPresenter.CallButto
         void showGenericMergeButton();
         void hideExtraRow();
         void displayManageConferencePanel(boolean on);
+        void displayModifyCallOptions(int callId);
+        void enableModifyCall(boolean enabled);
+        void showModifyCall(boolean show);
+    }
+
+    @Override
+    public void onActiveSubChanged(int subscription) {
+        InCallState state = InCallPresenter.getInstance()
+                .getPotentialStateFromCallList(CallList.getInstance());
+
+        onStateChange(state, CallList.getInstance());
     }
 }

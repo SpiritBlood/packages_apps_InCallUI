@@ -1,4 +1,8 @@
 /*
+ * Copyright (c) 2013, The Linux Foundation. All rights reserved.
+ * Not a Contribution, Apache license notifications and license are retained
+ * for attribution purposes only.
+ *
  * Copyright (C) 2013 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,9 +21,18 @@
 package com.android.incallui;
 
 import android.animation.LayoutTransition;
+import android.app.Activity;
+import android.content.BroadcastReceiver;
+import android.content.ContentResolver;
 import android.content.Context;
 import android.graphics.drawable.Drawable;
+import android.media.AudioManager;
 import android.os.Bundle;
+import static android.telephony.TelephonyManager.SIM_STATE_ABSENT;
+import android.telephony.MSimTelephonyManager;
+import android.telephony.TelephonyManager;
+import android.os.SystemProperties;
+import android.provider.Settings;
 import android.text.TextUtils;
 import android.text.format.DateUtils;
 import android.util.AttributeSet;
@@ -30,9 +43,12 @@ import android.view.View.OnClickListener;
 import android.view.ViewGroup;
 import android.view.ViewStub;
 import android.view.accessibility.AccessibilityEvent;
+import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.TextView;
+import android.widget.Toast;
 
+import com.android.services.telephony.common.AudioMode;
 import com.android.services.telephony.common.Call;
 
 import java.util.List;
@@ -54,8 +70,14 @@ public class CallCardFragment extends BaseFragment<CallCardPresenter, CallCardPr
     private View mProviderInfo;
     private TextView mProviderLabel;
     private TextView mProviderNumber;
+    private TextView mSubscriptionId;
     private ViewGroup mSupplementaryInfoContainer;
     private TextView mCallRecordingTimer;
+    private Button mVBButton;
+    private AudioManager mAudioManager;
+    private Toast mVBNotify;
+    private int mVBToastPosition;
+    private boolean mVBEnabled;
 
     // Secondary caller info
     private ViewStub mSecondaryCallInfo;
@@ -65,6 +87,30 @@ public class CallCardFragment extends BaseFragment<CallCardPresenter, CallCardPr
 
     // Cached DisplayMetrics density.
     private float mDensity;
+
+    private VideoCallPanel mVideoCallPanel;
+    private boolean mAudioDeviceInitialized = false;
+
+    // Constants for TelephonyProperties.PROPERTY_IMS_AUDIO_OUTPUT property.
+    // Currently, the default audio output is headset if connected, bluetooth
+    // if connected, speaker/earpiece for video/voice call.
+    private static final int IMS_AUDIO_OUTPUT_DEFAULT = 0;
+    private static final int IMS_AUDIO_OUTPUT_DISABLE_SPEAKER = 1;
+
+    private static final int TTY_MODE_OFF = 0;
+    private static final int TTY_MODE_HCO = 2;
+
+    private static final String VOLUME_BOOST = "volume_boost";
+
+    /**
+     * Controls audio route for VT calls.
+     * 0 - Use the default audio routing strategy.
+     * 1 - Disable the speaker. Route the audio to Headset or Bloutooth
+     *     or Earpiece, based on the default audio routing strategy.
+     * This property is for testing purpose only.
+     */
+    static final String PROPERTY_IMS_AUDIO_OUTPUT =
+                                "persist.radio.ims.audio.output";
 
     private CallRecorder.RecordingProgressListener mRecordingProgressListener =
             new CallRecorder.RecordingProgressListener() {
@@ -129,8 +175,19 @@ public class CallCardFragment extends BaseFragment<CallCardPresenter, CallCardPr
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        mVBToastPosition = Integer.parseInt(
+                getResources().getString(R.string.volume_boost_toast_position));
+
+        mAudioManager = (AudioManager) getActivity()
+                .getSystemService(Context.AUDIO_SERVICE);
     }
 
+    @Override
+    public void onAttach(Activity activity) {
+        super.onAttach(activity);
+        mVBEnabled = activity.getResources().getBoolean(R.bool.volume_boost_enabled);
+    }
 
     @Override
     public void onActivityCreated(Bundle savedInstanceState) {
@@ -166,8 +223,10 @@ public class CallCardFragment extends BaseFragment<CallCardPresenter, CallCardPr
         mProviderInfo = view.findViewById(R.id.providerInfo);
         mProviderLabel = (TextView) view.findViewById(R.id.providerLabel);
         mProviderNumber = (TextView) view.findViewById(R.id.providerAddress);
+        mSubscriptionId = (TextView) view.findViewById(R.id.subId);
         mSupplementaryInfoContainer =
             (ViewGroup) view.findViewById(R.id.supplementary_info_container);
+        mVideoCallPanel = (VideoCallPanel) view.findViewById(R.id.videoCallPanel);
         mCallRecordingTimer = (TextView) view.findViewById(R.id.callRecordingTimer);
 
         CallRecorder recorder = CallRecorder.getInstance();
@@ -178,11 +237,24 @@ public class CallCardFragment extends BaseFragment<CallCardPresenter, CallCardPr
         transition.enableTransitionType(LayoutTransition.CHANGING);
         transition.setAnimateParentHierarchy(false);
         transition.setDuration(200);
+
+        if (mVBEnabled) {
+            mVBButton = (Button) view.findViewById(R.id.volumeBoost);
+            if (null != mVBButton) {
+                mVBButton.setOnClickListener(mVBListener);
+                mVBButton.setVisibility(View.INVISIBLE);
+            }
+        }
     }
 
     @Override
     public void onDestroy() {
         super.onDestroy();
+
+        if (mVideoCallPanel!=null) {
+            mVideoCallPanel.onDestroy();
+            mVideoCallPanel = null;
+        }
 
         CallRecorder recorder = CallRecorder.getInstance();
         recorder.removeRecordingProgressListener(mRecordingProgressListener);
@@ -241,14 +313,14 @@ public class CallCardFragment extends BaseFragment<CallCardPresenter, CallCardPr
         } else {
             mNumberLabel.setVisibility(View.GONE);
         }
-
     }
 
     @Override
     public void setPrimary(String number, String name, boolean nameIsNumber, String label,
-            Drawable photo, boolean isConference, boolean isGeneric,
-            boolean isSipCall, boolean isForwarded) {
+            Drawable photo, boolean isConference, boolean isGeneric, boolean isSipCall,
+            boolean isForwarded, boolean isVideo) {
         Log.d(this, "Setting primary call");
+
 
         if (isConference) {
             name = getConferenceString(isGeneric);
@@ -265,8 +337,26 @@ public class CallCardFragment extends BaseFragment<CallCardPresenter, CallCardPr
         setPrimaryLabel(label);
 
         showCallTypeLabel(isSipCall, isForwarded);
+        MSimTelephonyManager tm = MSimTelephonyManager.getDefault();
+        int numPhones = tm.getPhoneCount();
 
-        setDrawableToImageView(mPhoto, photo);
+        if (tm.isMultiSimEnabled() && !(tm.getMultiSimConfiguration()
+                == MSimTelephonyManager.MultiSimVariants.DSDA)) {
+            final String multiSimName = "perferred_name_sub";
+            int subscription = getPresenter().getActiveSubscription();
+
+            if ((subscription != -1) && (!isSipCall)
+                    && MSimTelephonyManager.getDefault().getSimState(subscription)
+                            != TelephonyManager.SIM_STATE_ABSENT) {
+                final String simName = Settings.System.getString(getActivity()
+                        .getContentResolver(), multiSimName + (subscription + 1));
+                showSubscriptionInfo(simName);
+            }
+        }
+
+        if (! isVideo) {
+            setDrawableToImageView(mPhoto, photo);
+        }
     }
 
     @Override
@@ -304,11 +394,25 @@ public class CallCardFragment extends BaseFragment<CallCardPresenter, CallCardPr
 
     @Override
     public void setCallState(int state, Call.DisconnectCause cause, boolean bluetoothOn,
-            String gatewayLabel, String gatewayNumber, boolean isWaitingForRemoteSide) {
+            String gatewayLabel, String gatewayNumber, boolean isWaitingForRemoteSide,
+            int callType) {
         String callStateLabel = null;
+
+        // If this is a video call then update the state of the VideoCallPanel
+        if (CallUtils.isVideoCall(callType)) {
+            updateVideoCallState(state, callType);
+        } else {
+            // This will hide the VideoCallPanel for any non VT/ non VS call or
+            // downgrade scenarios
+            hideVideoCallWidgets();
+        }
 
         // States other than disconnected not yet supported
         callStateLabel = getCallStateLabelFromState(state, cause, isWaitingForRemoteSide);
+
+        if (mVBEnabled) {
+            updateVBbyCall(state);
+        }
 
         Log.v(this, "setCallState " + callStateLabel);
         Log.v(this, "DisconnectCause " + cause);
@@ -382,6 +486,15 @@ public class CallCardFragment extends BaseFragment<CallCardPresenter, CallCardPr
         } else {
             // hide() animation has no effect if it is already hidden.
             AnimationUtils.Fade.hide(mElapsedTime, View.INVISIBLE);
+        }
+    }
+
+    private void showSubscriptionInfo(String subString) {
+        if (!TextUtils.isEmpty(subString)) {
+            mSubscriptionId.setText(subString);
+            mSubscriptionId.setVisibility(View.VISIBLE);
+        } else {
+            mSubscriptionId.setVisibility(View.GONE);
         }
     }
 
@@ -584,6 +697,7 @@ public class CallCardFragment extends BaseFragment<CallCardPresenter, CallCardPr
         dispatchPopulateAccessibilityEvent(event, mPrimaryName);
         dispatchPopulateAccessibilityEvent(event, mPhoneNumber);
         dispatchPopulateAccessibilityEvent(event, mCallTypeLabel);
+        dispatchPopulateAccessibilityEvent(event, mSubscriptionId);
         dispatchPopulateAccessibilityEvent(event, mSecondaryCallName);
 
         return;
@@ -597,6 +711,236 @@ public class CallCardFragment extends BaseFragment<CallCardPresenter, CallCardPr
         // if no text added write null to keep relative position
         if (size == eventText.size()) {
             eventText.add(null);
+        }
+    }
+
+    /**
+     * Updates the VideoCallPanel based on the current state of the call
+     * TODO: Move to a separate file.
+     * @param call
+     */
+    private void updateVideoCallState(int callState, int callType) {
+        log("  - Videocall.state: " + callState);
+
+        if (mVideoCallPanel == null) {
+            loge("VideocallPanel is null");
+            return;
+        }
+        switch (callState) {
+            case Call.State.INCOMING:
+                break;
+
+            case Call.State.DIALING:
+            case Call.State.REDIALING:
+            case Call.State.ACTIVE:
+                initVideoCall(callType);
+                showVideoCallWidgets(callType);
+                break;
+
+            case Call.State.DISCONNECTING:
+            case Call.State.DISCONNECTED:
+            case Call.State.ONHOLD:
+            case Call.State.IDLE:
+            case Call.State.CALL_WAITING:
+                hideVideoCallWidgets();
+                break;
+
+            default:
+                Log.e(this, "videocall: updateVideoCallState in bad state:" + callState);
+                hideVideoCallWidgets();
+                break;
+        }
+    }
+
+    /**
+     * If this is a video call then hide the photo widget and show the video
+     * call panel
+     */
+    private void showVideoCallWidgets(int callType) {
+
+        if (isPhotoVisible()) {
+            log("show videocall widget");
+            mPhoto.setVisibility(View.GONE);
+        }
+
+        mVideoCallPanel.setVisibility(View.VISIBLE);
+        mVideoCallPanel.setPanelElementsVisibility(callType);
+        mVideoCallPanel.startOrientationListener(true);
+    }
+
+    /**
+     * Hide the video call widget and restore the photo widget and reset
+     * mAudioDeviceInitialized
+     */
+    private void hideVideoCallWidgets() {
+        mAudioDeviceInitialized = false;
+
+        if ((mVideoCallPanel != null) && (mVideoCallPanel.getVisibility() == View.VISIBLE)) {
+            log("Hide videocall widget");
+
+            mPhoto.setVisibility(View.VISIBLE);
+            mVideoCallPanel.setVisibility(View.GONE);
+            mVideoCallPanel.setCameraNeeded(false);
+            mVideoCallPanel.startOrientationListener(false);
+        }
+    }
+
+    /**
+     * Initializes the video call widgets if not already initialized
+     */
+    private void initVideoCall(int callType) {
+        /*
+         * 1. Speaker state is updated only at the beginning of a video call 2.
+         * For MO video call, speaker update happens in dialing state 3. For MT
+         * video call, it happens in active state 4. Speaker state not changed
+         * during a call when VOLTE<->VT call type change happens.
+         */
+        log("initVideoCall mAudioDeviceInitialized: " + mAudioDeviceInitialized);
+        if (!mAudioDeviceInitialized ) {
+            switchInVideoCallAudio(); // Set audio to speaker by default
+            mAudioDeviceInitialized = true;
+        }
+        // Choose camera direction based on call type
+        mVideoCallPanel.onCallInitiating(callType);
+    }
+
+    /**
+     * Switches the current routing of in-call audio for the video call
+     */
+    private void switchInVideoCallAudio() {
+        Log.d(this,"In switchInVideoCallAudio");
+
+        // If the wired headset is connected then the AudioService takes care of
+        // routing audio to the headset
+        int mode = AudioModeProvider.getInstance().getAudioMode();
+        CallCommandClient.getInstance().setAudioMode(mode);
+        if (mode == AudioMode.WIRED_HEADSET) {
+            Log.d(this,"Wired headset connected, not routing audio to speaker");
+            return;
+        }
+
+        // If the bluetooth is available then BluetoothHandsfree class takes
+        // care of making sure that the audio is routed to Bluetooth by default.
+        // However if the audio is not connected to Bluetooth because user wanted
+        // audio off then continue to turn on the speaker
+        if (mode == AudioMode.BLUETOOTH ) {
+            Log.d(this, "Bluetooth connected, not routing audio to speaker");
+            return;
+        }
+
+        // If the speaker is explicitly disabled then do not enable it.
+        if (SystemProperties.getInt(PROPERTY_IMS_AUDIO_OUTPUT,
+                IMS_AUDIO_OUTPUT_DEFAULT) == IMS_AUDIO_OUTPUT_DISABLE_SPEAKER) {
+            Log.d(this, "Speaker disabled, not routing audio to speaker");
+            return;
+        }
+
+        // If the bluetooth headset or the wired headset is not connected and
+        // the speaker is not disabled then turn on speaker by default
+        // for the VT call
+        CallCommandClient.getInstance().setAudioMode(AudioMode.SPEAKER);
+    }
+
+    /**
+     * Return true if mPhoto is available and is visible
+     *
+     * @return
+     */
+    private boolean isPhotoVisible() {
+        return ((mPhoto != null) && (mPhoto.getVisibility() == View.VISIBLE));
+    }
+
+    private void log(String msg) {
+        Log.d(this, msg);
+    }
+
+    private void loge(String msg) {
+        Log.e(this, msg);
+    }
+
+    private OnClickListener mVBListener = new OnClickListener() {
+        @Override
+        public void onClick(View arg0) {
+            if (isVBAvailable()) {
+                switchVBStatus();
+            }
+
+            updateVBButton();
+            showVBNotify();
+        }
+    };
+
+    private boolean isVBAvailable() {
+        int mode = AudioModeProvider.getInstance().getAudioMode();
+
+        int settingsTtyMode = Settings.Secure.getInt(getActivity().getContentResolver(),
+                Settings.Secure.PREFERRED_TTY_MODE, TTY_MODE_OFF);
+
+        return (mode == AudioMode.EARPIECE || mode == AudioMode.SPEAKER
+                || settingsTtyMode == TTY_MODE_HCO);
+    }
+
+    private void switchVBStatus() {
+        if (mAudioManager.getParameters(VOLUME_BOOST).contains("=on")) {
+            mAudioManager.setParameters(VOLUME_BOOST + "=off");
+        } else {
+            mAudioManager.setParameters(VOLUME_BOOST + "=on");
+        }
+    }
+
+    private void updateVBButton() {
+        if (isVBAvailable()
+                && mAudioManager.getParameters(VOLUME_BOOST).contains("=on")) {
+
+                mVBButton.setBackgroundResource(R.drawable.volume_in_boost_sel);
+        } else if (isVBAvailable()
+                && !(mAudioManager.getParameters(VOLUME_BOOST).contains("=on"))) {
+
+                mVBButton.setBackgroundResource(R.drawable.volume_in_boost_nor);
+        } else {
+            mVBButton.setBackgroundResource(R.drawable.volume_in_boost_unavailable);
+        }
+    }
+
+    private void showVBNotify() {
+        if (mVBNotify != null) {
+            mVBNotify.cancel();
+        }
+
+        if (isVBAvailable()
+                && mAudioManager.getParameters(VOLUME_BOOST).contains("=on")) {
+
+            mVBNotify = Toast.makeText(getView().getContext(),
+                    R.string.volume_boost_notify_enabled, Toast.LENGTH_SHORT);
+        } else if (isVBAvailable()
+                && !(mAudioManager.getParameters(VOLUME_BOOST).contains("=on"))) {
+
+            mVBNotify = Toast.makeText(getView().getContext(),
+                    R.string.volume_boost_notify_disabled, Toast.LENGTH_SHORT);
+        } else {
+            mVBNotify = Toast.makeText(getView().getContext(),
+                    R.string.volume_boost_notify_unavailable, Toast.LENGTH_SHORT);
+        }
+
+        mVBNotify.setGravity(Gravity.TOP, 0, mVBToastPosition);
+        mVBNotify.show();
+    }
+
+    private void updateVBbyCall(int state) {
+        // If there is Ims call, disable volume boost
+        boolean hasImsCall = CallUtils.hasImsCall(CallList.getInstance());
+
+        updateVBButton();
+
+        if (Call.State.ACTIVE == state && !hasImsCall) {
+            mVBButton.setVisibility(View.VISIBLE);
+        } else if (Call.State.DISCONNECTED == state || Call.State.IDLE == state) {
+            if (!CallList.getInstance().existsLiveCall()
+                    && mAudioManager.getParameters(VOLUME_BOOST).contains("=on")) {
+                mVBButton.setVisibility(View.INVISIBLE);
+
+                mAudioManager.setParameters(VOLUME_BOOST + "=off");
+            }
         }
     }
 }
