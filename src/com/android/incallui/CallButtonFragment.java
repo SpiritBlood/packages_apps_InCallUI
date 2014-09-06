@@ -56,7 +56,7 @@ public class CallButtonFragment
     private ImageButton mSwapButton;
     private ImageButton mBlacklistButton;
     private ImageButton mAddParticipantButton;
-    private Button mModifyCallButton;
+    private ImageButton mModifyCallButton;
     private CallRecordingButton mRecordButton;
 
     private View mBlacklistSpacer;
@@ -171,7 +171,7 @@ public class CallButtonFragment
             mBlacklistSpacer.setVisibility(View.GONE);
         }
 
-        mModifyCallButton = (Button) parent.findViewById(R.id.modifyCallButton);
+        mModifyCallButton = (ImageButton) parent.findViewById(R.id.modifyCallButton);
         mModifyCallButton.setOnClickListener(this);
 
         mRecordButton = (CallRecordingButton) parent.findViewById(R.id.recordButton);
@@ -304,6 +304,7 @@ public class CallButtonFragment
         mAddCallButton.setEnabled(enabled);
     }
 
+    @Override
     public void enableAddParticipant(boolean show) {
         mAddParticipantButton.setVisibility(show ? View.VISIBLE : View.GONE);
     }

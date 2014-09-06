@@ -29,6 +29,7 @@ import android.graphics.drawable.BitmapDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Message;
+import android.provider.Settings;
 import android.text.TextUtils;
 
 import com.android.incallui.ContactInfoCache.ContactCacheEntry;
@@ -45,6 +46,8 @@ public class StatusBarNotifier implements InCallPresenter.InCallStateListener {
     private static final int IN_CALL_NOTIFICATION = 1;
 
     private static final long IN_CALL_TIMEOUT = 1000L;
+
+    private static final String MULTI_SIM_NAME = "perferred_name_sub";
 
     private interface NotificationTimer {
         enum State {
@@ -336,7 +339,14 @@ public class StatusBarNotifier implements InCallPresenter.InCallStateListener {
         }
 
         // set the content
-        builder.setContentText(mContext.getString(contentResId));
+        String contentText = mContext.getString(contentResId);
+        if (contentResId == R.string.notification_dialing) {
+            int sub = call.getSubscription();
+            String name = Settings.System.getString(mContext.getContentResolver(),
+                    MULTI_SIM_NAME + (sub + 1));
+            contentText +=  "  (" + name + ")";
+        }
+        builder.setContentText(contentText);
         builder.setSmallIcon(iconResId);
         builder.setContentTitle(contentTitle);
         builder.setLargeIcon(largeIcon);
@@ -480,10 +490,22 @@ public class StatusBarNotifier implements InCallPresenter.InCallStateListener {
         // different calls.  So if both lines are in use, display info
         // from the foreground call.  And if there's a ringing call,
         // display that regardless of the state of the other calls.
+        int resId;
+        int voicePrivacy = call.getCapabilities() & Call.Capabilities.VOICE_PRIVACY;
         if (call.getState() == Call.State.ONHOLD) {
-            return R.drawable.stat_sys_phone_call_on_hold;
+            if (voicePrivacy != 0) {
+                resId = R.drawable.stat_sys_vp_phone_call_on_hold;
+            } else {
+                resId = R.drawable.stat_sys_phone_call_on_hold;
+            }
+        } else {
+            if (voicePrivacy != 0) {
+                resId = R.drawable.stat_sys_vp_phone_call;
+            } else {
+                resId = R.drawable.stat_sys_phone_call;
+            }
         }
-        return R.drawable.stat_sys_phone_call;
+        return resId;
     }
 
     /**

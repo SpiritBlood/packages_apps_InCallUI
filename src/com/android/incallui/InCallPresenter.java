@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2014, The Linux Foundation. All rights reserved.
  * Not a Contribution, Apache license notifications and license are retained
  * for attribution purposes only.
  *
@@ -109,6 +109,8 @@ public class InCallPresenter implements CallList.Listener {
 
     private boolean isImsMediaInitialized = false;
 
+    private Call.DisconnectCause mLastDisconnectCause = Call.DisconnectCause.UNKNOWN;
+
     public static synchronized InCallPresenter getInstance() {
         if (sInCallPresenter == null) {
             sInCallPresenter = new InCallPresenter();
@@ -158,8 +160,10 @@ public class InCallPresenter implements CallList.Listener {
         // will kick off an update and the whole process can start.
         mCallList.addListener(this);
 
-        // Initialize VideoCallManager. Instantiates the singleton.
-        VideoCallManager.getInstance(mContext);
+        mVideoCallManager = VideoCallManager.getInstance(mContext);
+        final VideoPauseController videoPause = mVideoCallManager.getVideoPauseController();
+        addListener(videoPause);
+        addIncomingCallListener(videoPause);
 
         Log.d(this, "Finished InCallPresenter.setUp");
     }
@@ -188,9 +192,11 @@ public class InCallPresenter implements CallList.Listener {
         final boolean doFinish = (mInCallActivity != null && isActivityStarted());
         Log.i(this, "Hide in call UI: " + doFinish);
 
-        if ((mCallList != null) && !(mCallList.existsLiveCall(mCallList.getActiveSubscription()))
-                && mCallList.switchToOtherActiveSubscription()) {
-            return;
+        if ((mCallList != null) && !(mCallList.existsLiveCall(mCallList.getActiveSubscription()))) {
+            Log.d(this, "Switch active sub. Last disc cause = " + mLastDisconnectCause);
+            boolean retainLch = (mLastDisconnectCause == Call.DisconnectCause.NORMAL)
+                    ? true: false;
+            if (mCallList.switchToOtherActiveSubscription(retainLch)) return;
         }
 
         if (doFinish) {
@@ -377,17 +383,21 @@ public class InCallPresenter implements CallList.Listener {
             listener.onStateChange(mInCallState, callList);
         }
 
-        if (MSimTelephonyManager.getDefault().getMultiSimConfiguration()
-                == MSimTelephonyManager.MultiSimVariants.DSDA && (mInCallActivity != null)) {
-            mInCallActivity.updateDsdaTab();
-        }
-
         if (isActivityStarted()) {
+            MSimTelephonyManager tm = MSimTelephonyManager.getDefault();
 
+            if (tm.getMultiSimConfiguration() == MSimTelephonyManager.MultiSimVariants.DSDA) {
+                mInCallActivity.updateDsdaTab();
+            }
             if (newState != InCallState.DISCONNECTING) {
                 mInCallActivity.updateSystemBarTranslucency();
             }
+        }
 
+        // Get the config whether we need to dismiss the keyguard screen, Google design is true.
+        boolean shouldDismissKeyguard = (mInCallActivity != null &&
+                mInCallActivity.getResources().getBoolean(R.bool.config_incall_dismiss_keyguard));
+        if (isActivityStarted() && shouldDismissKeyguard) {
             final boolean hasCall = callList.getActiveOrBackgroundCall() != null ||
                     callList.getOutgoingCall() != null;
             mInCallActivity.dismissKeyguard(hasCall);
@@ -435,13 +445,18 @@ public class InCallPresenter implements CallList.Listener {
      */
     @Override
     public void onDisconnect(Call call) {
+        mLastDisconnectCause = (call != null ) ? call.getDisconnectCause():
+                Call.DisconnectCause.UNKNOWN;
         hideDialpadForDisconnect();
         maybeShowErrorDialogOnDisconnect(call);
 
         // We need to do the run the same code as onCallListChange.
         onCallListChange(CallList.getInstance());
 
-        if (isActivityStarted()) {
+        // Get the config whether we need to dismiss the keyguard screen, Google design is true.
+        boolean shouldDismissKeyguard = (mInCallActivity != null &&
+                mInCallActivity.getResources().getBoolean(R.bool.config_incall_dismiss_keyguard));
+        if (isActivityStarted() && shouldDismissKeyguard) {
             mInCallActivity.dismissKeyguard(false);
         }
     }
@@ -567,6 +582,8 @@ public class InCallPresenter implements CallList.Listener {
         if (showing) {
             mIsActivityPreviouslyStarted = true;
         }
+
+        mVideoCallManager.getVideoPauseController().onUiShowing(showing);
     }
 
     /**
@@ -703,6 +720,21 @@ public class InCallPresenter implements CallList.Listener {
         }
     }
 
+    private void switchActiveSubIfNeed() {
+        Log.d(this, "startOrFinishUi call list:" + mCallList);
+        if (mCallList != null) {
+            int activeSub = mCallList.getActiveSubscription();
+            boolean hasActiveCall = mCallList.existsConnectedCall(activeSub);
+            Log.d(this, "startOrFinishUi active sub : " + activeSub);
+            Log.d(this, "has connected call in active sub:" + hasActiveCall);
+            if (!hasActiveCall) {
+                Log.d(this, "switch sub in non-dsda, cause " + mLastDisconnectCause);
+                boolean retainLch = mLastDisconnectCause == Call.DisconnectCause.NORMAL;
+                mCallList.switchToOtherActiveSubscription(retainLch);
+            }
+        }
+    }
+
     /**
      * When the state of in-call changes, this is the first method to get called. It determines if
      * the UI needs to be started or finished depending on the new state and does it.
@@ -710,6 +742,12 @@ public class InCallPresenter implements CallList.Listener {
     private InCallState startOrFinishUi(InCallState newState) {
         Log.d(this, "startOrFinishUi: " + mInCallState + " -> " + newState);
 
+        // If there is a CS call in sub2, and there is a SIP call in sub1
+        // disconnected, INCALL state will be got in non-dsda, so need switch
+        // active sub
+        if (newState == InCallState.INCALL) {
+            switchActiveSubIfNeed();
+        }
         // TODO: Consider a proper state machine implementation
 
         // If the state isn't changing, we have already done any starting/stopping of
@@ -958,6 +996,12 @@ public class InCallPresenter implements CallList.Listener {
             // that moment
             // the system may not find any Activity which can accept this Intent
             Log.e(LOG_TAG, "Activity for adding calls isn't found.");
+        }
+    }
+
+    public void onSuppServiceFailed(int service) {
+        if (mInCallActivity != null) {
+            mInCallActivity.onSuppServiceFailed(service);
         }
     }
 
