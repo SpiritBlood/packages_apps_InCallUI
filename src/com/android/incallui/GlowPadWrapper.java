@@ -126,6 +126,9 @@ public class GlowPadWrapper extends GlowPadView implements GlowPadView.OnTrigger
             case R.drawable.ic_lockscreen_answer:
                 callType = CallDetails.CALL_TYPE_VOICE;
                 break;
+            case R.drawable.ic_lockscreen_speaker:
+                callType = CallDetails.CALL_TYPE_VOICE;
+                break;
             default:
                 Log.wtf(this, "Unknown resource id, resId=" + resId);
                 break;
@@ -154,7 +157,7 @@ public class GlowPadWrapper extends GlowPadView implements GlowPadView.OnTrigger
                 mTargetTriggered = true;
                 break;
             case R.drawable.ic_lockscreen_speaker:
-                mAnswerListener.onAnswer();
+                mAnswerListener.onAnswer(toCallType(resId));
                 CallCommandClient.getInstance().setAudioMode(AudioMode.SPEAKER);
                 mTargetTriggered = true;
                 break;
